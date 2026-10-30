@@ -16,7 +16,6 @@
 #define NO_OPENBIOS_PROTOS
 #include "arch/common/fw_cfg.h"
 
-#define PROM_ADDR 0x1fff0000000
 #define CFG_ADDR  0x1fe02000510
 #define HZ        1 * 1000 * 1000
 #define TICK_INT_DIS 0x8000000000000000
@@ -40,6 +39,16 @@ entry:
         wrpr    %g0, PSTATE_PRIV, %pstate
         wr      %g0, 0, %fprs
         wrpr    %g0, 0x0, %tl
+
+        ! %l7 = the physical address the boot PROM answers at. The image is
+        ! linked at a virtual address of its own and the mappings below
+        ! connect the two, so the physical side is taken from the PC: the
+        ! reset vector entered this image, inside the PROM's first 512 kB
+        ! page, which is the granularity those mappings use.
+        call 1f
+        nop
+1:      setx 0x7ffff, %g2, %g1
+        andn %o7, %g1, %l7
 
         ! Extract NWINDOWS from %ver
         rdpr    %ver, %g1
@@ -169,7 +178,7 @@ entry:
 	srlx    %g5, 19, %g6			! %g6 = # of 512k .rodata pages
 	set	48, %g7
 	set	0x80000, %g5
-        setx    PROM_ADDR, %l1, %l2
+        mov     %l7, %l2
 1:      stxa	%g4, [%g7] ASI_DMMU		! vaddr = _rodata, ctx=0
 	set	0xc0000000, %g3
 	sllx	%g3, 32, %g3
@@ -193,7 +202,7 @@ entry:
         srlx    %g5, 19, %g6			! %g6 = # of 512k .text pages
 	set	0x80000, %g5
 	set	48, %g7
-        setx    PROM_ADDR, %l1, %l2
+        mov     %l7, %l2
 1:      stxa	%g4, [%g7] ASI_IMMU		! vaddr = _start, ctx=0
 	set	0xc0000000, %g3
 	sllx	%g3, 32, %g3
@@ -226,8 +235,7 @@ lowmem:
         setx	_bss, %o7, %o1                  ! Last address of DATA
         setx    _start, %o7, %o2
         sub     %o0, %o2, %o2                   ! _data - _start
-        setx    PROM_ADDR, %o7, %o3
-        add     %o3, %o2, %o2                   ! PROM_ADDR + (_data - _start)
+        add     %l7, %o2, %o2                   ! its address in the PROM
         ba	2f
          nop
 1:

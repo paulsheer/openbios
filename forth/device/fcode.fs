@@ -269,7 +269,9 @@ defer fcode-c@             \ get byte
 \   Defines type of new FCode function as buffer:.
 
 : b(buffer:)
-  4 , allot
+  4 ,
+  here swap 2dup 0 fill
+  allot drop
   reveal
   ;
 

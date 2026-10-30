@@ -33,7 +33,9 @@ do { printk("IDE - %s: " fmt, __func__ , ##args); } while (0)
 
 /* DECLARE data structures for the nodes.  */
 DECLARE_UNNAMED_NODE( ob_ide, 0, sizeof(struct ide_drive*) );
+#ifndef CONFIG_SPARC64
 DECLARE_UNNAMED_NODE( ob_ide_ctrl, 0, sizeof(int));
+#endif
 
 /*
  * define to 2 for the standard 2 channels only
@@ -1281,6 +1283,39 @@ NODE_METHODS(ob_ide) = {
 	{ "dma-sync",		ob_ide_dma_sync		},
 };
 
+#ifdef CONFIG_SPARC64
+/* ( str len -- lun target ) Parse a SCSI-style "<target>,<lun>" unit
+ * address. find-child stores the TOP stack value into reg cell 0, so the
+ * target must be on top and the lun below it. */
+static void
+ob_ide_ctrl_decodeunit(void)
+{
+	char *arg = pop_fstr_copy();
+	char *ptr;
+	ucell target, lun;
+
+	target = strtol(arg, &ptr, 16);
+	lun = (*ptr == ',') ? strtol(ptr + 1, NULL, 16) : 0;
+	free(arg);
+
+	PUSH(lun);
+	PUSH(target);
+}
+
+/* ( lun target -- str len ) */
+static void
+ob_ide_ctrl_encodeunit(void)
+{
+	char buf[24];
+	ucell target = POP();
+	ucell lun = POP();
+
+	snprintf(buf, sizeof(buf), "%x,%x", (unsigned)target, (unsigned)lun);
+	push_str(buf);
+}
+#endif
+
+#ifndef CONFIG_SPARC64
 static void
 ob_ide_ctrl_decodeunit(int *idx)
 {
@@ -1308,6 +1343,7 @@ NODE_METHODS(ob_ide_ctrl) = {
 	{ "dma-map-out",	ob_ide_dma_map_out	},
 	{ "dma-sync",		ob_ide_dma_sync		},
 };
+#endif
 
 static void set_cd_alias(const char *path)
 {
@@ -1356,12 +1392,25 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 	struct ide_channel *chan;
 	int io_ports[IDE_MAX_CHANNELS];
 	int ctl_ports[IDE_MAX_CHANNELS];
+#ifndef CONFIG_SPARC64
 	u32 props[6];
+#endif
 
 	io_ports[0] = io_port0;
 	ctl_ports[0] = ctl_port0;
 	io_ports[1] = io_port1;
 	ctl_ports[1] = ctl_port1;
+
+#ifdef CONFIG_SPARC64
+	/* Solaris sun4u expects the ATA disk nodes to be direct children of
+	 * the controller node (e.g. /pci@.../ide@3/dad@0,0) with no intervening
+	 * channel node.  The unit-address is the 2-cell SCSI-style <target,lun>
+	 * form that Solaris's uata/dad drivers match against dad.conf/sd.conf. */
+	set_int_property(get_cur_dev(), "#address-cells", 2);
+	set_int_property(get_cur_dev(), "#size-cells", 0);
+	bind_func("decode-unit", ob_ide_ctrl_decodeunit);
+	bind_func("encode-unit", ob_ide_ctrl_encodeunit);
+#endif
 
 	for (i = 0; i < IDE_NUM_CHANNELS; i++, current_channel++) {
 
@@ -1404,6 +1453,7 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 
 		ob_ide_identify_drives(chan);
 
+#ifndef CONFIG_SPARC64
 		fword("new-device");
 		dnode = get_cur_dev();
 
@@ -1412,7 +1462,7 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 
 		BIND_NODE_METHODS(get_cur_dev(), ob_ide_ctrl);
 
-#if !defined(CONFIG_PPC) && !defined(CONFIG_SPARC64)
+#if !defined(CONFIG_PPC)
 		props[0]=14; props[1]=0;
 		set_property(dnode, "interrupts",
 			     (char *)&props, 2*sizeof(props[0]));
@@ -1435,6 +1485,7 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 		IDE_DPRINTF(DEV_NAME": [io ports 0x%x-0x%x,0x%x]\n",
 		            current_channel, chan->io_regs[0],
 		            chan->io_regs[0] + 7, chan->io_regs[8]);
+#endif
 
 		for (j = 0; j < 2; j++) {
 			struct ide_drive *drive = &chan->drives[j];
@@ -1450,13 +1501,21 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 					media = "floppy";
 					break;
 				case ide_media_cdrom:
+#ifdef CONFIG_SPARC64
+					media = "sd";
+#else
 					media = "cdrom";
+#endif
 					break;
 				case ide_media_optical:
 					media = "mo";
 					break;
 				case ide_media_disk:
+#ifdef CONFIG_SPARC64
+					media = "dad";
+#else
 					media = "disk";
+#endif
 					break;
 			}
 
@@ -1464,12 +1523,32 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 
 			fword("new-device");
 			dnode = get_cur_dev();
+#ifdef CONFIG_SPARC64
+			{
+				u32 regprops[2];
+				regprops[0] = __cpu_to_be32(i * 2 + j);
+				regprops[1] = __cpu_to_be32(0);
+				set_property(dnode, "reg", (char *)regprops,
+				    2 * sizeof(regprops[0]));
+			}
+#else
 			set_int_property(dnode, "reg", j);
+#endif
 			push_str(media);
 			fword("device-name");
 
 			push_str("block");
 			fword("device-type");
+
+#ifdef CONFIG_SPARC64
+			if (drive->media == ide_media_disk) {
+				set_property(dnode, "compatible", "ide-disk", 9);
+				set_property(dnode, "class_prop", "dada", 5);
+			} else if (drive->media == ide_media_cdrom) {
+				set_property(dnode, "compatible", "ide-cdrom", 10);
+				set_property(dnode, "class_prop", "scsi", 5);
+			}
+#endif
 
 			PUSH(pointer2cell(drive));
 			feval("value drive");
@@ -1489,7 +1568,9 @@ int ob_ide_init(const char *path, uint32_t io_port0, uint32_t ctl_port0,
 				set_hd_alias(nodebuff);
 		}
 
+#ifndef CONFIG_SPARC64
 		fword("finish-device");
+#endif
 	}
 
 	return 0;
@@ -1693,25 +1774,53 @@ int macio_ide_init(const char *path, uint32_t addr, int nb_channels)
 					media = "floppy";
 					break;
 				case ide_media_cdrom:
+#ifdef CONFIG_SPARC64
+					media = "sd";
+#else
 					media = "cdrom";
+#endif
 					break;
 				case ide_media_optical:
 					media = "mo";
 					break;
 				case ide_media_disk:
+#ifdef CONFIG_SPARC64
+					media = "dad";
+#else
 					media = "disk";
+#endif
 					break;
 			}
 			IDE_DPRINTF("%s]: %s\n", media, drive->model);
 
 			fword("new-device");
 			dnode = get_cur_dev();
+#ifdef CONFIG_SPARC64
+			{
+				u32 regprops[2];
+				regprops[0] = __cpu_to_be32(i * 2 + j);
+				regprops[1] = __cpu_to_be32(0);
+				set_property(dnode, "reg", (char *)regprops,
+				    2 * sizeof(regprops[0]));
+			}
+#else
 			set_int_property(dnode, "reg", j);
+#endif
 			push_str(media);
 			fword("device-name");
 
 			push_str("block");
 			fword("device-type");
+
+#ifdef CONFIG_SPARC64
+			if (drive->media == ide_media_disk) {
+				set_property(dnode, "compatible", "ide-disk", 9);
+				set_property(dnode, "class_prop", "dada", 5);
+			} else if (drive->media == ide_media_cdrom) {
+				set_property(dnode, "compatible", "ide-cdrom", 10);
+				set_property(dnode, "class_prop", "scsi", 5);
+			}
+#endif
 
 			PUSH(pointer2cell(drive));
 			feval("value drive");
@@ -1731,7 +1840,9 @@ int macio_ide_init(const char *path, uint32_t addr, int nb_channels)
 				set_hd_alias(nodebuff);
 		}
 
+#ifndef CONFIG_SPARC64
 		fword("finish-device");
+#endif
 	}
 
 	return 0;

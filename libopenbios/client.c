@@ -273,7 +273,8 @@ handle_calls(prom_args_t *pb)
 	}
 
 	/* Store catch result */
-	pb->args[pb->nargs] = val;
+	if (pb->nret)
+		pb->args[pb->nargs] = val;
 	
 	j = dstackcnt;
 	for (i = 1; i < pb->nret; i++, j--) {
@@ -332,6 +333,8 @@ of_client_interface(int *params)
 		if (val == -1) {
 			printk("Unimplemented service %s ([" FMT_prom_arg "] -- [" FMT_prom_arg "])\n",
 				get_service(pb), pb->nargs, pb->nret);
+			for (i = 0; i < pb->nret; i++)
+				pb->args[pb->nargs + i] = -1;
 		} else {
 #ifdef DEBUG_CIF
 			printk("Error calling client interface: " FMT_ucellx "\n", val);

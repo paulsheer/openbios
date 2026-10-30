@@ -21,9 +21,10 @@
 #define PCI_FN(pcidev) ((uint8_t) ((pcidev) >> 8) & 7)
 
 #define PCI_CONFIG(dev) (arch->cfg_addr                                 \
-                         + (unsigned long)PCI_ADDR(PCI_BUS(dev),        \
-                                                   PCI_DEV(dev),        \
-                                                   PCI_FN(dev)))
+                         + ((unsigned long)PCI_ADDR(PCI_BUS(dev),       \
+                                                    PCI_DEV(dev),       \
+                                                    PCI_FN(dev))        \
+                            << arch->cfg_shift))
 
 static inline uint8_t pci_config_read8(pci_addr dev, uint8_t reg)
 {

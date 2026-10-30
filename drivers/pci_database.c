@@ -71,6 +71,24 @@ static const pci_dev_t scsi_devices[] = {
         lsi53c810_config_cb, NULL,
     },
     {
+        /* lsi53c895 controller (QEMU reports 0x000c so Solaris glm binds);
+           glm probes the chip itself, so no config_cb / OpenBIOS bus probe. */
+        PCI_VENDOR_ID_LSI_LOGIC, PCI_DEVICE_ID_LSI_53C895,
+        NULL, "lsi53c895", NULL,
+        "pci1000,c\0",
+        0, 0, 0,
+        NULL, NULL,
+    },
+    {
+        /* LSI SAS1068 controller (Fusion-MPT); Solaris mpt driver scans
+           the bus itself, so no config_cb / OpenBIOS bus probe is needed. */
+        PCI_VENDOR_ID_LSI_LOGIC, PCI_DEVICE_ID_LSI_SAS1068,
+        NULL, "mpt", NULL,
+        "pci1000,54\0",
+        0, 0, 0,
+        NULL, NULL,
+    },
+    {
         0xFFFF, 0xFFFF,
         NULL, NULL, NULL, NULL,
         -1, -1, -1,
@@ -164,7 +182,7 @@ static const pci_dev_t eth_devices[] = {
     },
     {
         PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_E1000,
-        NULL, "e1000", NULL,  "pci1086,100e\0",
+        NULL, "e1000", NULL,  "pci8086,100e\0",
         0, 0, 0,
         eth_config_cb, "ethernet",
     },
@@ -400,6 +418,15 @@ static const pci_dev_t hbrg_devices[] = {
     },
 };
 
+/* Every PCI-to-PCI bridge the table below does not name, under the node
+ name and cell counts a bridge takes by default. */
+static const pci_dev_t PCIbrg_generic = {
+    0xFFFF, 0xFFFF, NULL,
+    "pci", NULL, "pci-bridge\0pciclass,060400\0",
+    3, 2, 1,
+    NULL, NULL,
+};
+
 static const pci_dev_t PCIbrg_devices[] = {
     {
         PCI_VENDOR_ID_DEC, PCI_DEVICE_ID_DEC_21154, NULL,
@@ -423,10 +450,12 @@ static const pci_dev_t PCIbrg_devices[] = {
 
 static const pci_dev_t miscbrg_devices[] = {
     {
+        /* own_unit_addr is set because ebus_config_cb() binds this
+           node's "decode-unit" and "encode-unit" itself. */
         PCI_VENDOR_ID_SUN, PCI_DEVICE_ID_SUN_EBUS, NULL,
         "ebus", "ebus", "pci108e,1000\0pciclass,068000\0",
         2, 1, 1,
-        ebus_config_cb, NULL,
+        ebus_config_cb, NULL, 1,
     },
     {
         0xFFFF, 0xFFFF,
@@ -1279,43 +1308,53 @@ const pci_dev_t *pci_find_device (uint8_t class, uint8_t subclass,
         }
     }
 find_device:
-    if (dev == NULL)
-	goto bad_device;
-    for (;; dev++) {
+    for (; dev != NULL; dev++) {
         if (dev->vendor == 0xFFFF && dev->product == 0xFFFF) {
-            goto bad_device;
+            break;
         }
         if (dev->vendor == vendor && dev->product == product) {
-            if (dev->name != NULL)
-                name = dev->name;
-            if (dev->type != NULL)
-                type = dev->type;
-            if (dev->config_cb != NULL) {
-                config_cb = dev->config_cb;
-            }
-            if (dev->private != NULL)
-                private = dev->private;
-            new = malloc(sizeof(pci_dev_t));
-            if (new == NULL)
-                return NULL;
-            new->vendor = vendor;
-            new->product = product;
-            new->type = type;
-            new->name = name;
-            new->model = dev->model;
-            new->compat = dev->compat;
-            new->acells = dev->acells;
-            new->scells = dev->scells;
-            new->icells = dev->icells;
-            new->config_cb = config_cb;
-            new->private = private;
-
-            return new;
+            goto found;
         }
     }
-bad_device:
-    printk("Cannot manage '%s' PCI device type '%s':\n %x %x (%x %x %x)\n",
-           name, type, vendor, product, class, subclass, iface);
 
-    return NULL;
+bad_device:
+    /* A PCI-to-PCI bridge the tables above do not name is still a bridge:
+       it is addressed, probed and published the same way, which is what
+       the ports of a PCI Express switch depend on. */
+    if (class == PCI_BASE_CLASS_BRIDGE && subclass == PCI_SUBCLASS_BRIDGE_PCI) {
+        dev = &PCIbrg_generic;
+    } else {
+        printk("Cannot manage '%s' PCI device type '%s':\n %x %x (%x %x %x)\n",
+               name, type, vendor, product, class, subclass, iface);
+
+        return NULL;
+    }
+
+found:
+    if (dev->name != NULL)
+        name = dev->name;
+    if (dev->type != NULL)
+        type = dev->type;
+    if (dev->config_cb != NULL) {
+        config_cb = dev->config_cb;
+    }
+    if (dev->private != NULL)
+        private = dev->private;
+    new = malloc(sizeof(pci_dev_t));
+    if (new == NULL)
+        return NULL;
+    new->vendor = vendor;
+    new->product = product;
+    new->type = type;
+    new->name = name;
+    new->model = dev->model;
+    new->compat = dev->compat;
+    new->acells = dev->acells;
+    new->scells = dev->scells;
+    new->icells = dev->icells;
+    new->config_cb = config_cb;
+    new->private = private;
+    new->own_unit_addr = dev->own_unit_addr;
+
+    return new;
 }

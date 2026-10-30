@@ -26,6 +26,9 @@ struct pci_dev_t {
     int icells;
     int (*config_cb)(const pci_config_t *config);
     const void *private;
+    /* the config callback binds "decode-unit" and "encode-unit" itself:
+       this bridge's children are not addressed in PCI's own form */
+    int own_unit_addr;
 };
 
 extern int ide_config_cb2(const pci_config_t *config);

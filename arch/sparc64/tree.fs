@@ -4,15 +4,32 @@ include config.fs
 \ UPA encode/decode unit
 \ -------------------------------------------------------------------------
 
-: decode-unit-upa ( str len -- id lun )
-  2 parse-nhex
+\ The sabre reg bustype is 0x1fe: UPA node-id 0b111 in bits[8:6] plus the
+\ 5-bit port-id in bits[5:1] (bit 0 zero). Solaris names root children by
+\ upa-portid, so map between bustype and portid here.
+
+: upa-portid>reg  ( portid -- bustype )
+  dup if 1 lshift 1c0 or then
 ;
 
-: encode-unit-upa ( id lun -- str len)
+\ decode-unit: parse "<portid>,<offset>" and return reg cells. find-child
+\ stores the TOP stack value into unit_phys[0] (reg cell 0), so the bustype
+\ must be on top and the offset below it.
+: decode-unit-upa ( str len -- offset bustype )
+  2 parse-nhex
+  upa-portid>reg
+;
+
+\ encode-unit: render reg cells as "<portid>,<offset>". decode-phys pushes
+\ the offset (low cell) on the bottom and the bustype on top.
+: encode-unit-upa ( offset bustype -- str len )
   swap
   pocket tohexstr
   " ," pocket tmpstrcat >r
-  rot pocket tohexstr r> tmpstrcat drop
+  rot
+  1 rshift 1f and
+  pocket tohexstr
+  r> tmpstrcat drop
 ;
 
 \ ---------

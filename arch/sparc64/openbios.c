@@ -853,6 +853,9 @@ arch_init( void )
 }
 
 unsigned long isa_io_base;
+/* End of the platform's own NVRAM/IDPROM window in isa_io_base's space,
+ * read by drivers/pci.c's I/O-space allocator (0 on a platform with none). */
+unsigned long nvram_io_limit;
 
 extern struct _console_ops arch_console_ops;
 

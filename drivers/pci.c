@@ -52,6 +52,7 @@
 
 DECLARE_UNNAMED_NODE( ob_pci_bus_node, INSTALL_OPEN, 2*sizeof(int) );
 DECLARE_UNNAMED_NODE( ob_pci_bridge_node, INSTALL_OPEN, 2*sizeof(int) );
+DECLARE_UNNAMED_NODE( ob_pci_bridge_own_unit_node, INSTALL_OPEN, 2*sizeof(int) );
 DECLARE_UNNAMED_NODE( ob_pci_simple_node, 0, 2*sizeof(int) );
 
 const pci_arch_t *arch;
@@ -489,6 +490,21 @@ NODE_METHODS(ob_pci_bridge_node) = {
 	{ "dma-sync",		ob_pci_dma_sync		},
 };
 
+/* Same as ob_pci_bridge_node, less "decode-unit" and "encode-unit". A
+ bridge whose children are not addressed in PCI's devfn/register form
+ binds that pair from its own config callback, and a second definition
+ of a method name shadows the first rather than replacing it. */
+NODE_METHODS(ob_pci_bridge_own_unit_node) = {
+	{ "open",		ob_pci_open		},
+	{ "close",		ob_pci_close		},
+	{ "pci-map-in",		ob_pci_bridge_map_in	},
+	{ "dma-alloc",		ob_pci_dma_alloc	},
+	{ "dma-free",		ob_pci_dma_free		},
+	{ "dma-map-in",		ob_pci_dma_map_in	},
+	{ "dma-map-out",	ob_pci_dma_map_out	},
+	{ "dma-sync",		ob_pci_dma_sync		},
+};
+
 NODE_METHODS(ob_pci_simple_node) = {
 	{ "open",		ob_pci_open		},
 	{ "close",		ob_pci_close		},
@@ -513,6 +529,34 @@ static void pci_set_bus_range(const pci_config_t *config)
 
 
 	set_property(dev, "bus-range", (char *)props, 2 * sizeof(props[0]));
+}
+
+/* Real OBP identity-maps a PCI-PCI bridge's claimed windows into
+   "ranges", phys.hi's "n" bit set on both sides; Linux and illumos take
+   the bridge's windows from this property. */
+static void pci_set_bridge_ranges(const pci_config_t *config,
+				  unsigned long io_base, unsigned long io_limit,
+				  unsigned long mem_base, unsigned long mem_limit)
+{
+	phandle_t dev = find_dev(config->path);
+	u32 props[2 * 8];
+	int ncells = 0;
+	int flags = IS_NOT_RELOCATABLE;
+
+	if (io_limit > io_base) {
+		ncells += pci_encode_phys_addr(props + ncells, flags, IO_SPACE, 0, 0, io_base);
+		ncells += pci_encode_phys_addr(props + ncells, flags, IO_SPACE, 0, 0, io_base);
+		ncells += pci_encode_size(props + ncells, io_limit - io_base);
+	}
+
+	if (mem_limit > mem_base) {
+		ncells += pci_encode_phys_addr(props + ncells, flags, MEMORY_SPACE_32, 0, 0, mem_base);
+		ncells += pci_encode_phys_addr(props + ncells, flags, MEMORY_SPACE_32, 0, 0, mem_base);
+		ncells += pci_encode_size(props + ncells, mem_limit - mem_base);
+	}
+
+	if (ncells)
+		set_property(dev, "ranges", (char *)props, ncells * sizeof(props[0]));
 }
 
 static void ob_pci_reload_device_path(phandle_t phandle, pci_config_t *config);
@@ -1053,6 +1097,11 @@ int vga_config_cb (const pci_config_t *config)
 	return 0;
 }
 
+#ifdef CONFIG_DRIVER_EBUS
+static void ob_isa_decode_unit(void);
+static void ob_isa_encode_unit(void);
+#endif
+
 int ebus_config_cb(const pci_config_t *config)
 {
 #ifdef CONFIG_DRIVER_EBUS
@@ -1064,6 +1113,12 @@ int ebus_config_cb(const pci_config_t *config)
     int flags, space_code;
     ucell virt;
     phys_addr_t io_phys_base = 0;
+
+    /* An ebus child is addressed by the two cells of its own "reg", so the
+       serial port at 14,3f8 is "su@14,3f8" -- the path sun4u OBP publishes
+       and the one Solaris rebuilds for the same node. */
+    bind_func("decode-unit", ob_isa_decode_unit);
+    bind_func("encode-unit", ob_isa_encode_unit);
 
     /* Serial */
     props[0] = 0x14;
@@ -1176,7 +1231,12 @@ int ebus_config_cb(const pci_config_t *config)
     fword("finish-device");
 
 #ifdef CONFIG_DRIVER_FLOPPY
-    ob_floppy_init(config->path, "fdthree", 0x3f0ULL, 0);
+    /* The ISA FDC "fdthree" node makes Solaris's fd driver map it as a
+       cheerio controller, which needs 3 reg sets (82077 + cheerio DMA +
+       cheerio auxio) that QEMU's sun4u ISA FDC does not emulate; probing it
+       panics the kernel (NULL deref in ddi_regs_map_setup).  The floppy is
+       not needed for network JumpStart, so omit the node entirely. */
+    // ob_floppy_init(config->path, "fdthree", 0x3f0ULL, 0);
 #endif
 #ifdef CONFIG_DRIVER_PC_SERIAL
     ob_pc_serial_init(config->path, "su", (PCI_BASE_ADDR_1 | 0ULL) << 32, 0x3f8ULL, 0);
@@ -1186,6 +1246,36 @@ int ebus_config_cb(const pci_config_t *config)
 #endif
 #endif
     return 0;
+}
+
+/* ( str len -- phys.lo phys.hi ) An ebus or ISA bridge addresses its
+ children in that bus's own two-cell {space,offset} convention, not the
+ PCI devfn/register form ob_pci_decode_unit produces. */
+static void
+ob_isa_decode_unit(void)
+{
+    char *arg = pop_fstr_copy();
+    char *ptr;
+    ucell space, offset;
+
+    space = strtol(arg, &ptr, 16);
+    offset = (*ptr == ',') ? strtol(ptr + 1, NULL, 16) : 0;
+    free(arg);
+
+    PUSH(offset);
+    PUSH(space);
+}
+
+/* ( phys.lo phys.hi -- str len ) */
+static void
+ob_isa_encode_unit(void)
+{
+    char buf[24];
+    ucell space = POP();
+    ucell offset = POP();
+
+    snprintf(buf, sizeof(buf), "%x,%x", (unsigned)space, (unsigned)offset);
+    push_str(buf);
 }
 
 int i82378_config_cb(const pci_config_t *config)
@@ -1300,6 +1390,8 @@ static void ob_pci_add_properties(phandle_t phandle,
 
 	set_int_property(dev, "min-grant", pci_config_read8(addr, PCI_MIN_GNT));
 	set_int_property(dev, "max-latency", pci_config_read8(addr, PCI_MAX_LAT));
+	set_int_property(dev, "latency-timer",
+			pci_config_read8(addr, PCI_LATENCY_TIMER));
 
 	status=pci_config_read16(addr, PCI_STATUS);
 
@@ -1599,7 +1691,8 @@ static void ob_scan_sabre_pci_bus(int *bus_num, unsigned long *mem_base,
 static void ob_configure_pci_bridge(pci_addr addr,
                                     int *bus_num, unsigned long *mem_base,
                                     unsigned long *io_base,
-                                    int primary_bus, pci_config_t *config)
+                                    int primary_bus, uint8_t subclass,
+                                    pci_config_t *config)
 {
     unsigned long old_mem_base, old_io_base, io_scan_limit;
     uint16_t cmd;
@@ -1640,11 +1733,21 @@ static void ob_configure_pci_bridge(pci_addr addr,
     pci_config_write16(addr, PCI_IO_BASE_UPPER, (*io_base >> 16));
     pci_config_write8(addr, PCI_IO_BASE, ((*io_base >> 8) & ~(0xf)));
 
+    /* A configuration callback may address its device's registers while the
+       scan below is still running, and the limit register comes out of reset
+       below the base. */
+    pci_config_write16(addr, PCI_MEMORY_LIMIT, 0xfff0);
+
     /* Always ensure legacy ioports are accessible during enumeration.
        Some drivers (e.g. IDE) will attempt ioport access as part of
        the configuration process, so we allow them during the secondary
        bus scan and then set the correct IO limit below. */
     io_scan_limit = *io_base + 0xffff;
+    /* The limit register holds bits 15:12 of a 16-bit I/O address, so a scan
+       limit past 0xffff loses its carry and lands below the base */
+    if (io_scan_limit > 0xffff) {
+        io_scan_limit = 0xffff;
+    }
     pci_config_write16(addr, PCI_IO_LIMIT_UPPER, (io_scan_limit >> 16));
     pci_config_write8(addr, PCI_IO_LIMIT, (io_scan_limit >> 8) & ~(0xf));
 
@@ -1694,6 +1797,14 @@ static void ob_configure_pci_bridge(pci_addr addr,
     }
 
     pci_set_bus_range(config);
+
+    /* Host bridges (sabre/psycho) already publish "ranges" via
+     * pci_host_set_ranges(); repeating it here panics OpenBSD's
+     * psycho_get_ranges(). */
+    if (subclass == PCI_SUBCLASS_BRIDGE_PCI) {
+        pci_set_bridge_ranges(config, old_io_base, *io_base,
+                              old_mem_base, *mem_base);
+    }
 }
 
 static int ob_pci_read_identification(int bus, int devnum, int fn,
@@ -1829,10 +1940,12 @@ static phandle_t ob_configure_pci_device(const char* parent_path,
 
     switch (class) {
     case PCI_BASE_CLASS_BRIDGE:
-        if (subclass != PCI_SUBCLASS_BRIDGE_HOST) {
-            BIND_NODE_METHODS(phandle, ob_pci_bridge_node);
-        } else {
+        if (subclass == PCI_SUBCLASS_BRIDGE_HOST) {
             BIND_NODE_METHODS(phandle, ob_pci_bus_node);
+        } else if (pci_dev && pci_dev->own_unit_addr) {
+            BIND_NODE_METHODS(phandle, ob_pci_bridge_own_unit_node);
+        } else {
+            BIND_NODE_METHODS(phandle, ob_pci_bridge_node);
         }
         break;
     }
@@ -1878,7 +1991,8 @@ static phandle_t ob_configure_pci_device(const char* parent_path,
             ++(*bus_num);
         }
 
-        ob_configure_pci_bridge(addr, bus_num, mem_base, io_base, bus, &config);
+        ob_configure_pci_bridge(addr, bus_num, mem_base, io_base, bus,
+                                subclass, &config);
     }
 
     fword("finish-device");
@@ -2097,6 +2211,12 @@ int ob_pci_init(void)
     /* I/O ports under 0x400 are used by devices mapped at fixed
        location. */
     io_base = 0x400;
+#if defined(CONFIG_SPARC64)
+    /* A deep enough device population can grow past 0x400 and into the
+       platform's own NVRAM window in this same I/O space. */
+    if (io_base < nvram_io_limit)
+        io_base = nvram_io_limit;
+#endif
 
     bus = 0;
 

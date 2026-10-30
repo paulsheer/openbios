@@ -29,6 +29,9 @@ struct pci_arch_t {
 	unsigned long cfg_data;
 	unsigned long cfg_base;
 	unsigned long cfg_len;
+	/* Left shift of the bus/device/function field in a configuration
+	   address; 4 where a bridge gives each function 4 kB */
+	unsigned int cfg_shift;
 	unsigned long host_pci_base; /* offset of PCI memory space within host memory space */
 	unsigned long pci_mem_base; /* in PCI memory space */
 	unsigned long mem_len;
@@ -39,6 +42,10 @@ struct pci_arch_t {
 };
 
 extern const pci_arch_t *arch;
+
+/* End of the machine's own NVRAM/IDPROM window in the PCI I/O space, or 0
+ where the platform has none. */
+extern unsigned long nvram_io_limit;
 
 /* Vendor-Specific */
 #define PCI_CAP_ID_VNDR          0x9
@@ -190,6 +197,8 @@ extern const pci_arch_t *arch;
 
 #define PCI_VENDOR_ID_LSI_LOGIC          0x1000
 #define PCI_DEVICE_ID_LSI_53C810         0x0001
+#define PCI_DEVICE_ID_LSI_53C895         0x000c
+#define PCI_DEVICE_ID_LSI_SAS1068        0x0054
 
 #define PCI_VENDOR_ID_ATI                0x1002
 #define PCI_DEVICE_ID_ATI_RAGE128_PF     0x5046

@@ -91,6 +91,8 @@ external
 : parent parent ;
 
 : getproplen ( name phandle -- len|-1 )
+  dup -1 = if 2drop -1 exit then
+  ?dup 0= if drop -1 exit then
   over cstrlen swap
   ?phandle get-package-property
   if -1 else nip then
@@ -263,7 +265,7 @@ external
 \ -------------------------------------------------------------
 
 : boot ( bootspec -- )
-  ." BOOT"
+  reset-all
 ;
 
 : enter ( -- )
