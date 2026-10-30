@@ -1,6 +1,6 @@
 # OpenBIOS — Solaris 10 sun4u boot support
 
-This fork adds the changes needed for Solaris 10 (SPARC, `sun4u`) to boot
+This fork adds the changes needed for REAL FULL Sun Microsystems Solaris 10 (SPARC, `sun4u`) to boot
 under QEMU on top of this OpenBIOS tree.
 
 ## What changed
